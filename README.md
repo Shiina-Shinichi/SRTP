@@ -41,9 +41,13 @@
     │   ├── diff_ana.py
     │   ├── hint_ana.py
     │   ├── vis_diff.py
-    │   └── vis_hint.py
+    │   ├── vis_hint.py
+    │   ├── weighting_ana.py    # (新增) 稳健性：重叠加权检验
+    │   ├── vis_2d_hte.py       # (新增) 2D交叉异质性：生成难度×人群热力图
+    │   └── deep_dive_hte.py    # (新增) 行为学深挖：显著性检验与答题耗时探测
     └── debug
         └── diff_debug.py
+
 ```
 
 ### 2.1 `src/processing/precompute_diff.py`
@@ -110,6 +114,17 @@
   - 检查异常（如 outcome 全相同、PS 完全一致、自匹配等）
   - 打印样本预览，帮助定位问题
 
+### 2.9 `src/analysis/weighting_ana.py`（稳健性检验：重叠加权）
+- 输入：`data/results/raw_features_diff.csv`（全量特征数据集，因为加权需要用到被 1:1 匹配丢弃的所有样本）
+- 功能：使用 Overlap Weighting (OW) 算法保留 100% 样本，计算加权后的 treated/control 正确率与总体 Lift，并输出加权 SMD 诊断指标，用于验证 1:1 匹配严格丢弃样本是否引发了核心结论的偏移。
+
+### 2.10 `src/analysis/vis_2d_hte.py`（二维交叉异质性热力图）
+- 输入：`data/results/matched_difficulty.csv`（1:1 双卡尺匹配后的纯净数据集）
+- 功能：将人群画像（PS 分数分为 Low/Mid/High）与题目难度（Hard/Medium/Easy）进行 3×3 交叉，计算每个网格内的独立 Lift，并自动生成带有样本量 (N) 和百分比的高颜值学术热力图 `2d_cross_heterogeneity.png`。
+
+### 2.11 `src/analysis/deep_dive_hte.py`（行为机理深挖与显著性检验）
+- 输入：同时依赖 `data/results/matched_difficulty.csv`（获取对齐的 ID）和 `data/results/raw_features_diff.csv`（根据 ID 穿透回溯原始特征中的 `ms_response` 答题耗时对数）。
+- 功能：对二维交叉矩阵的每一个网格独立执行配对 t 检验（Paired t-test），在控制台输出 P-value 及显著性星号（***）；同时换算出干预组看提示后的“平均真实答题耗时（秒）”，用行为学数据实锤高 PS 群体在难题上的“系统博弈（Gaming the System）”盲猜行为。
 ---
 
 ## 3. 数据与路径约定（运行前必须对齐）
@@ -201,8 +216,20 @@ python src/analysis/diff_ana.py
 ```bash
 python src/debug/diff_debug.py
 ```
-
 图像大概是一个类似抛物线或者悬链线的样子，这是论文里也提及过的理想的情况。
+
+### 5.3 进阶分析与稳健性检验
+
+在跑完 5.2 后，依次执行以下脚本：
+
+# 1. 稳健性检验 (验证100%样本保留下的结论)
+python src/analysis/weighting_ana.py
+
+# 2. 二维交叉异质性 (输出 3x3 热力图)
+python src/analysis/vis_2d_hte.py
+
+# 3. 行为机制探究 (输出各组耗时，实锤“刷提示”现象)
+python src/analysis/deep_dive_hte.py
 
 ---
 
@@ -266,14 +293,14 @@ Difficulty 链路：
 
 ## 8. 建议与后续计划
 
-### 8.1 加强匹配质量诊断（否则异质性结论站不住）
+### 8.1 加强匹配质量诊断（否则异质性结论站不住）（ 已落实）
 当前平衡性检查偏简化，建议补齐标准诊断（最好做到每次实验自动输出一份表+图）：
 - 对所有协变量（例如 `acc_rate / n_count / ms_response / difficulty` 等）计算 **SMD（Standardized Mean Difference）**，经验阈值：`|SMD| < 0.1`（越小越好）
 - 画 **Love plot**：before/after matching 的 SMD 对比
 - 画 **PS overlap**：匹配后 treated/control 的 PS 分布重叠（密度图或直方图）
 - 记录样本利用情况：匹配成功对数、丢弃率、是否存在大量重复使用样本（会影响后续推断）
 
-### 8.2 稳健性对比
+### 8.2 稳健性对比（已落实）
 为了证明异质性结论不是某个方法/某套参数的偶然结果，建议至少做 2–3 种方案对比（同一套分组规则下）：
 - **PS 分层（quintile/decile）**：作为简单稳定的 baseline（桶内比较 + 加权汇总）
 - **加权方法**：ATT-weighting / IPTW / overlap weighting（很多时候比匹配更稳、样本利用率更高）
@@ -290,7 +317,7 @@ Difficulty 链路：
   - difficulty 链路中 `DIFF_CALIPER` 适度变大：保证每个难度组有样本，但会增加“任务不够可比”的风险  
 - **增大候选邻居数**（difficulty 链路常用）  
   - 提高 `SEARCH_CANDIDATES`，让 control 更可能找到同时满足 PS+difficulty 卡尺的 treated  
-- **调整匹配比例**  
+- **调整匹配比例**  （ 已落实）
   - 将 1:1 改为 1:k（k=2/3/4）以提升稳定性（尤其是某些难度组样本太少时）  
   - 若采用 1:k 或有放回，后续推断建议改用 bootstrap CI
 
@@ -302,7 +329,7 @@ Difficulty 链路：
   - 剔除 PS 极端、缺少重叠的样本（例如只保留 PS 在某个区间内的数据），避免“拿不可比的人硬比”  
   - 修剪后必须重新做平衡性诊断，并报告修剪比例
 
-#### 8.3.3 策略切换（当 PSM 很难通过诊断/样本利用率太差时）
+#### 8.3.3 策略切换（当 PSM 很难通过诊断/样本利用率太差时）（ 已落实）
 - **改用加权（推荐优先尝试 overlap weighting）**  
   - 当匹配一直丢样本或难以平衡时，加权方法通常更稳、实现也不复杂  
 - **分层/分箱替代匹配**  
@@ -311,4 +338,4 @@ Difficulty 链路：
 ---
 ## 9. 留言
 
-首先跑通，再考虑结论好不好。内事不决问吴出，外事不决问AI，我要做半个甩手掌柜了。细节的东西可能还有不少，这个README里没提到的细节可以来找我，剩下的就交给你们了，干巴嘚。
+首先跑通，再考虑结论好不好。细节的东西可能还有不少o_o。
